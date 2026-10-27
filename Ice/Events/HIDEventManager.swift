@@ -24,6 +24,9 @@ final class HIDEventManager: ObservableObject {
     /// History of the manager's enabled states.
     private var enabledStateStack = [Bool]()
 
+    /// The most recently read frames of the items drawn by MenuBarAgent.
+    private var cachedMenuBarAgentItemFrames: (date: Date, frames: [CGRect])?
+
     /// A Boolean value that indicates whether the manager is enabled.
     private var isEnabled = false {
         didSet {
@@ -456,15 +459,27 @@ extension HIDEventManager {
     /// A Boolean value that indicates whether the mouse pointer is within
     /// the bounds of the menu bar.
     func isMouseInsideMenuBar(appState: AppState, screen: NSScreen) -> Bool {
-        // Ice icon must be vertically visible. Otherwise, we can infer
-        // that the menu bar is hidden and the mouse is not inside.
-        guard
-            let iceIcon = appState.menuBarManager.controlItem(withName: .visible),
-            let iceIconFrame = iceIcon.frame,
-            iceIconFrame.maxY <= screen.frame.maxY,
-            let mouseLocation = MouseHelpers.locationAppKit
-        else {
+        guard let mouseLocation = MouseHelpers.locationAppKit else {
             return false
+        }
+
+        if usesNativeMenuBarHiding {
+            // On macOS 27, the Ice icon is drawn by MenuBarAgent and its own
+            // window is never on screen, so its frame says nothing about
+            // whether the menu bar is showing.
+            guard !appState.menuBarManager.isMenuBarHiddenBySystem else {
+                return false
+            }
+        } else {
+            // Ice icon must be vertically visible. Otherwise, we can infer
+            // that the menu bar is hidden and the mouse is not inside.
+            guard
+                let iceIcon = appState.menuBarManager.controlItem(withName: .visible),
+                let iceIconFrame = iceIcon.frame,
+                iceIconFrame.maxY <= screen.frame.maxY
+            else {
+                return false
+            }
         }
 
         // Infer the menu bar frame from the screen frame.
@@ -494,6 +509,10 @@ extension HIDEventManager {
         guard let mouseLocation = MouseHelpers.locationCoreGraphics else {
             return false
         }
+        if usesNativeMenuBarHiding {
+            // Status items are not windows on macOS 27.
+            return menuBarAgentItemFrames().contains { $0.contains(mouseLocation) }
+        }
         let windowIDs = Bridging.getMenuBarWindowList(option: [.onScreen, .activeSpace, .itemsOnly])
         return windowIDs.contains { windowID in
             guard let bounds = Bridging.getWindowBounds(for: windowID) else {
@@ -501,6 +520,18 @@ extension HIDEventManager {
             }
             return bounds.contains(mouseLocation)
         }
+    }
+
+    /// Returns the frames of the items drawn by MenuBarAgent, reading them at
+    /// most a few times a second, since this is checked on mouse movement.
+    private func menuBarAgentItemFrames() -> [CGRect] {
+        let now = Date.now
+        if let cached = cachedMenuBarAgentItemFrames, now.timeIntervalSince(cached.date) < 0.5 {
+            return cached.frames
+        }
+        let frames = MenuBarAgentReader.items().map(\.frame)
+        cachedMenuBarAgentItemFrames = (now, frames)
+        return frames
     }
 
     /// A Boolean value that indicates whether the mouse pointer is within
