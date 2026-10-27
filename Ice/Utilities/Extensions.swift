@@ -160,6 +160,11 @@ extension CGImage {
             }
         }
 
+        guard count > 0 else {
+            // Every pixel was below the alpha threshold.
+            return nil
+        }
+
         // Components are currently in integer format (0 to 255), but need
         // to be converted to floating point (0 to 1). Makes more sense to
         // scale the count up to match the components, rather than scale
@@ -517,9 +522,10 @@ extension NSScreen {
 
     /// The display identifier of the screen.
     var displayID: CGDirectDisplayID {
-        // Value and type are guaranteed here, so force casting is okay.
-        // swiftlint:disable:next force_cast
-        deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as! CGDirectDisplayID
+        guard let number = deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else {
+            return kCGNullDirectDisplay
+        }
+        return number.uint32Value
     }
 
     /// A Boolean value that indicates whether the screen has a notch.

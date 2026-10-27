@@ -88,6 +88,17 @@ final class UpdatesManager: NSObject, ObservableObject {
 
 // MARK: UpdatesManager: SPUUpdaterDelegate
 extension UpdatesManager: @preconcurrency SPUUpdaterDelegate {
+    func updater(_ updater: SPUUpdater, mayPerform updateCheck: SPUUpdateCheck) throws {
+        // This build is maintained separately from the original project, whose
+        // update feed is still configured. Only check when the user asks, so a
+        // release there never silently replaces this build.
+        guard updateCheck == .updates else {
+            throw NSError(domain: "com.jordanbaird.Ice.Updates", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: "Background update checks are disabled in this build.",
+            ])
+        }
+    }
+
     func updater(_ updater: SPUUpdater, willScheduleUpdateCheckAfterDelay delay: TimeInterval) {
         guard let appState else {
             return

@@ -23,6 +23,25 @@ enum ScreenCapture {
             }
             return window.title != nil
         }
+        // On macOS 27, status items are not windows, so there may be no menu
+        // bar item windows to check. Window titles of other apps are only
+        // visible with screen capture permissions, so look for any titled
+        // window that isn't ours.
+        if let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[CFString: Any]] {
+            let ownPID = ProcessInfo.processInfo.processIdentifier
+            for window in windows {
+                guard
+                    let pid = window[kCGWindowOwnerPID] as? pid_t,
+                    pid != ownPID,
+                    window[kCGWindowOwnerName] as? String != "Window Server"
+                else {
+                    continue
+                }
+                if let title = window[kCGWindowName] as? String, !title.isEmpty {
+                    return true
+                }
+            }
+        }
         // CGPreflightScreenCaptureAccess() only returns an initial value,
         // but we can use it as a fallback.
         return CGPreflightScreenCaptureAccess()
