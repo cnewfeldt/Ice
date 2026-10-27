@@ -56,7 +56,10 @@ final class MenuBarSection {
 
     /// A Boolean value that indicates whether the Ice Bar should be used.
     private var useIceBar: Bool {
-        appState?.settings.general.useIceBar ?? false
+        guard !usesNativeMenuBarHiding else {
+            return false
+        }
+        return appState?.settings.general.useIceBar ?? false
     }
 
     /// A weak reference to the menu bar manager.
@@ -109,6 +112,16 @@ final class MenuBarSection {
             // The visible section should always be enabled.
             return true
         }
+        if usesNativeMenuBarHiding {
+            // Section dividers are not shown on macOS 27, so their presence
+            // in the menu bar says nothing about whether a section is enabled.
+            switch name {
+            case .visible, .hidden:
+                return true
+            case .alwaysHidden:
+                return appState?.settings.advanced.enableAlwaysHiddenSection ?? false
+            }
+        }
         return controlItem.isAddedToMenuBar
     }
 
@@ -155,9 +168,8 @@ final class MenuBarSection {
             return
         }
 
-        guard controlItem.isAddedToMenuBar else {
+        guard usesNativeMenuBarHiding ? isEnabled : controlItem.isAddedToMenuBar else {
             // The section is disabled.
-            // TODO: Can we use isEnabled for this check?
             return
         }
 

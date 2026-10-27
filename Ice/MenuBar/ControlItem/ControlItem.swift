@@ -202,7 +202,7 @@ final class ControlItem {
                 else {
                     return
                 }
-                if isVisible {
+                if isVisible || (usesNativeMenuBarHiding && section.isEnabled) {
                     hotkey.enable()
                 } else {
                     hotkey.disable()
@@ -365,6 +365,13 @@ final class ControlItem {
 
             button.image = image
         case .hidden, .alwaysHidden:
+            if usesNativeMenuBarHiding {
+                // On macOS 27, items are hidden through the system's allow list,
+                // so dividers have nothing to do. MenuBarAgent also gives every
+                // status item a full slot, however narrow, so remove them.
+                removeFromMenuBar()
+                return
+            }
             switch state {
             case .showSection:
                 switch appState.settings.advanced.sectionDividerStyle {
@@ -431,7 +438,7 @@ final class ControlItem {
 
     /// Adds the control item to the menu bar.
     private func addToMenuBar() {
-        guard !isAddedToMenuBar else {
+        guard !isAddedToMenuBar, !(usesNativeMenuBarHiding && isSectionDivider) else {
             return
         }
         statusItem.isVisible = true
@@ -510,22 +517,26 @@ final class ControlItem {
         settingsItem.keyEquivalentModifierMask = .command
         menu.addItem(settingsItem)
 
-        menu.addItem(.separator())
+        // Search depends on the window-based item manager, which is not
+        // used on macOS 27.
+        if !usesNativeMenuBarHiding {
+            menu.addItem(.separator())
 
-        let searchItem = NSMenuItem(
-            title: "Search Menu Bar Items",
-            action: #selector(showSearchPanel),
-            keyEquivalent: ""
-        )
-        if
-            let hotkey = hotkey(withAction: .searchMenuBarItems),
-            let keyCombination = hotkey.keyCombination
-        {
-            searchItem.keyEquivalent = keyCombination.key.keyEquivalent
-            searchItem.keyEquivalentModifierMask = keyCombination.modifiers.nsEventFlags
+            let searchItem = NSMenuItem(
+                title: "Search Menu Bar Items",
+                action: #selector(showSearchPanel),
+                keyEquivalent: ""
+            )
+            if
+                let hotkey = hotkey(withAction: .searchMenuBarItems),
+                let keyCombination = hotkey.keyCombination
+            {
+                searchItem.keyEquivalent = keyCombination.key.keyEquivalent
+                searchItem.keyEquivalentModifierMask = keyCombination.modifiers.nsEventFlags
+            }
+            searchItem.target = self
+            menu.addItem(searchItem)
         }
-        searchItem.target = self
-        menu.addItem(searchItem)
 
         menu.addItem(.separator())
 
@@ -566,6 +577,17 @@ final class ControlItem {
 
         menu.addItem(.separator())
 
+        if usesNativeMenuBarHiding {
+            let restoreItem = NSMenuItem(
+                title: "Show All Apps and Quit",
+                action: #selector(restoreAllAndQuit),
+                keyEquivalent: ""
+            )
+            restoreItem.target = self
+            restoreItem.toolTip = "Switches every app Ice has hidden back on in System Settings, then quits. Use this before uninstalling Ice."
+            menu.addItem(restoreItem)
+        }
+
         let quitItem = NSMenuItem(
             title: "Quit Ice",
             action: #selector(NSApp.terminate),
@@ -597,6 +619,12 @@ final class ControlItem {
     /// Opens the menu bar search panel.
     @objc private func showSearchPanel() {
         appState?.menuBarManager.searchPanel.show()
+    }
+
+    /// Switches every app Ice has hidden back on, then quits.
+    @objc private func restoreAllAndQuit() {
+        appState?.nativeHidingManager.restoreAll()
+        NSApp.terminate(nil)
     }
 
     /// Opens the settings window and checks for app updates.

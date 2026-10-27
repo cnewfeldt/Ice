@@ -132,7 +132,11 @@ struct SettingsView: View {
         case .general:
             GeneralSettingsPane(settings: appState.settings.general)
         case .menuBarLayout:
-            MenuBarLayoutSettingsPane(itemManager: appState.itemManager)
+            if usesNativeMenuBarHiding {
+                NativeLayoutSettingsPane(manager: appState.nativeHidingManager)
+            } else {
+                MenuBarLayoutSettingsPane(itemManager: appState.itemManager)
+            }
         case .menuBarAppearance:
             MenuBarAppearanceSettingsPane(appearanceManager: appState.appearanceManager)
         case .hotkeys:

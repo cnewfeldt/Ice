@@ -138,6 +138,27 @@ final class AccessibilityPermission: Permission {
     }
 }
 
+// MARK: - FullDiskAccessPermission
+
+/// On macOS 27, Ice hides menu bar items by switching apps' "Allow in the Menu
+/// Bar" setting, which is stored in Control Center's protected container.
+final class FullDiskAccessPermission: Permission {
+    init() {
+        super.init(
+            title: "Full Disk Access",
+            details: [
+                "Hide and show apps' menu bar items using the \"Allow in the Menu Bar\" setting.",
+            ],
+            isRequired: true,
+            settingsURL: URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"),
+            check: {
+                MenuBarAllowList.isReadable
+            },
+            request: { }
+        )
+    }
+}
+
 // MARK: - ScreenRecordingPermission
 
 final class ScreenRecordingPermission: Permission {

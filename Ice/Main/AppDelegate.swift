@@ -52,6 +52,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    func applicationWillTerminate(_ notification: Notification) {
+        if usesNativeMenuBarHiding {
+            // Hidden apps are switched off in System Settings, which outlives
+            // Ice. Switch them back on so nothing stays hidden after Ice quits.
+            appState.nativeHidingManager.restoreAll()
+        }
+    }
+
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
         Logger.default.debug("Handling reopen")
         openSettingsWindow()

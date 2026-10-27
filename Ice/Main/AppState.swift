@@ -40,6 +40,9 @@ final class AppState: ObservableObject {
     /// Global cache for menu bar item images.
     let imageCache = MenuBarItemImageCache()
 
+    /// Manager for hiding menu bar items on macOS 27 and later.
+    let nativeHidingManager = NativeHidingManager()
+
     /// Manager for input events received by the app.
     let hidEventManager = HIDEventManager()
 
@@ -62,14 +65,20 @@ final class AppState: ObservableObject {
         settings.performSetup(with: self)
         menuBarManager.performSetup(with: self)
 
-        if #available(macOS 26.0, *) {
+        if usesNativeMenuBarHiding {
+            // Status items are not windows on macOS 27, so the window-based
+            // item manager and image cache have nothing to work with.
+            nativeHidingManager.performSetup(with: self)
+        } else if #available(macOS 26.0, *) {
             await MenuBarItemService.Connection.shared.start()
         }
 
         appearanceManager.performSetup(with: self)
         hidEventManager.performSetup(with: self)
-        await itemManager.performSetup(with: self)
-        imageCache.performSetup(with: self)
+        if !usesNativeMenuBarHiding {
+            await itemManager.performSetup(with: self)
+            imageCache.performSetup(with: self)
+        }
         updatesManager.performSetup(with: self)
         userNotificationManager.performSetup(with: self)
 
@@ -163,7 +172,7 @@ final class AppState: ObservableObject {
         .throttle(for: 0.1, scheduler: DispatchQueue.main, latest: true)
         .merge(with: Just(true).delay(for: 1, scheduler: DispatchQueue.main))
         .sink { [weak self] shouldUpdate in
-            guard let self, shouldUpdate else {
+            guard let self, shouldUpdate, !usesNativeMenuBarHiding else {
                 return
             }
             Task {
@@ -204,6 +213,8 @@ final class AppState: ObservableObject {
             permissions.accessibility.hasPermission
         case .screenRecording:
             permissions.screenRecording.hasPermission
+        case .fullDiskAccess:
+            permissions.fullDiskAccess?.hasPermission ?? true
         }
     }
 
