@@ -12,6 +12,7 @@ struct NativeLayoutSettingsPane: View {
     @ObservedObject var manager: NativeHidingManager
 
     @State private var targetedSection: MenuBarSection.Name?
+    @State private var targetedApp: String?
 
     private var sections: [MenuBarSection.Name] {
         MenuBarSection.Name.allCases.filter { name in
@@ -41,7 +42,11 @@ struct NativeLayoutSettingsPane: View {
             VStack(spacing: 3) {
                 Text("Drag apps into the section where their menu bar items belong.")
                     .font(.title3.bold())
-                Text("On macOS 27, Ice hides items app by app. System items such as the clock and Wi-Fi are managed in System Settings.")
+                Text("Drag within a section to set the order the Ice Bar uses. To reorder items in the menu bar itself, ⌘ Command-drag them there.")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                Text("On macOS 27, Ice hides items app by app. System items such as the clock, Wi-Fi, Siri and Weather are managed in System Settings > Menu Bar.")
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -85,7 +90,7 @@ struct NativeLayoutSettingsPane: View {
             }
             .dropDestination(for: String.self) { ids, _ in
                 for id in ids {
-                    manager.assign(id, to: section)
+                    manager.move(id, before: nil, in: section)
                 }
                 return !ids.isEmpty
             } isTargeted: { isTargeted in
@@ -125,6 +130,27 @@ struct NativeLayoutSettingsPane: View {
             .fixedSize()
         }
         .contentShape(Rectangle())
+        .overlay(alignment: .top) {
+            // Shows where a dropped app will be inserted.
+            if targetedApp == app.id {
+                Rectangle()
+                    .fill(Color.accentColor)
+                    .frame(height: 2)
+                    .offset(y: -4)
+            }
+        }
+        .dropDestination(for: String.self) { ids, _ in
+            for id in ids {
+                manager.move(id, before: app.id, in: app.section)
+            }
+            return !ids.isEmpty
+        } isTargeted: { isTargeted in
+            if isTargeted {
+                targetedApp = app.id
+            } else if targetedApp == app.id {
+                targetedApp = nil
+            }
+        }
         .draggable(app.id) {
             Label {
                 Text(app.name)

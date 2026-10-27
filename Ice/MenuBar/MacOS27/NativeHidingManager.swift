@@ -85,6 +85,7 @@ final class NativeHidingManager: ObservableObject {
     private enum Keys {
         static let assignments = "MacOS27SectionAssignments"
         static let journal = "MacOS27DisallowedByIce"
+        static let order = "MacOS27AppOrder"
     }
 
     /// The section assigned to each allow list entry. Entries that are not
@@ -104,6 +105,13 @@ final class NativeHidingManager: ObservableObject {
     private var journal: Set<String> {
         get { Set(UserDefaults.standard.stringArray(forKey: Keys.journal) ?? []) }
         set { UserDefaults.standard.set(newValue.sorted(), forKey: Keys.journal) }
+    }
+
+    /// The order the user arranged apps in. Apps that were never moved are
+    /// not listed, and sort by name after the ones that were.
+    private var order: [String] {
+        get { UserDefaults.standard.stringArray(forKey: Keys.order) ?? [] }
+        set { UserDefaults.standard.set(newValue, forKey: Keys.order) }
     }
 
     // MARK: Setup
@@ -412,6 +420,39 @@ final class NativeHidingManager: ObservableObject {
         refreshApps()
     }
 
+    /// Moves the app with the given entry identifier into a section, placing
+    /// it before another app, or at the end of the section if `target` is `nil`.
+    ///
+    /// The order is used by the layout pane and the Ice Bar. It does not
+    /// change the order of items in the menu bar, which macOS 27 does not
+    /// let apps change.
+    func move(_ id: String, before target: String?, in section: MenuBarSection.Name) {
+        guard id != ownEntryID, id != target else {
+            return
+        }
+
+        // Start from the order currently displayed, so apps that were never
+        // moved keep their place relative to the moved one.
+        var newOrder = apps.map(\.id).filter { $0 != id }
+        if let target, let index = newOrder.firstIndex(of: target) {
+            newOrder.insert(id, at: index)
+        } else if let lastInSection = apps.last(where: { $0.section == section && $0.id != id }),
+                  let index = newOrder.firstIndex(of: lastInSection.id) {
+            newOrder.insert(id, at: index + 1)
+        } else {
+            newOrder.append(id)
+        }
+        // Keep the positions of apps that aren't listed right now.
+        let listed = Set(newOrder)
+        order = newOrder + order.filter { !listed.contains($0) && $0 != id }
+
+        if (assignments[id] ?? .visible) != section {
+            assign(id, to: section)
+        } else {
+            refreshApps()
+        }
+    }
+
     /// Updates the list of apps shown in the layout interface.
     ///
     /// Lists the apps that have items in the menu bar now, plus every app that
@@ -426,6 +467,7 @@ final class NativeHidingManager: ObservableObject {
         let assignments = assignments
         let journal = journal
         let ownEntryID = ownEntryID
+        let positions = Dictionary(order.enumerated().map { ($1, $0) }, uniquingKeysWith: { first, _ in first })
 
         let runningApps = NSWorkspace.shared.runningApplications.map { app in
             (bundleIdentifier: app.bundleIdentifier, executablePath: app.executableURL?.path)
@@ -456,7 +498,18 @@ final class NativeHidingManager: ObservableObject {
                     isRunning: runningApps.contains { entry.owns(bundleIdentifier: $0.bundleIdentifier, executablePath: $0.executablePath) }
                 )
             }
-            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+            .sorted { lhs, rhs in
+                switch (positions[lhs.id], positions[rhs.id]) {
+                case let (lhsPosition?, rhsPosition?):
+                    lhsPosition < rhsPosition
+                case (.some, nil):
+                    true
+                case (nil, .some):
+                    false
+                case (nil, nil):
+                    lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
+                }
+            }
     }
 
     private static func nameAndIcon(for entry: MenuBarAllowList.Entry) -> (String, NSImage?) {
