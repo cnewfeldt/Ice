@@ -49,6 +49,14 @@ enum MenuBarAllowList {
         /// Returns a Boolean value that indicates whether the given app's
         /// menu bar items belong to this entry.
         func owns(bundleIdentifier: String?, executablePath: String?) -> Bool {
+            // An app always belongs to its own entry, even if the entry's item
+            // locations were last recorded from another process it launched.
+            if let bundleIdentifier, bundleIdentifier == self.bundleIdentifier {
+                return true
+            }
+            if let executablePath, executablePath == executableURL?.path {
+                return true
+            }
             if let bundleIdentifier {
                 for candidate in itemBundleIdentifiers {
                     // Helpers are sometimes listed with a team prefix,
