@@ -41,8 +41,12 @@ struct GeneralSettingsPane: View {
             IceSection {
                 iceIconOptions
             }
-            IceSection {
-                iceBarOptions
+            // The Ice Bar and item spacing depend on menu bar items being
+            // windows, which they are not on macOS 27.
+            if !usesNativeMenuBarHiding {
+                IceSection {
+                    iceBarOptions
+                }
             }
             IceSection {
                 showOptions
@@ -50,8 +54,10 @@ struct GeneralSettingsPane: View {
             IceSection {
                 rehideOptions
             }
-            IceSection {
-                spacingOptions
+            if !usesNativeMenuBarHiding {
+                IceSection {
+                    spacingOptions
+                }
             }
         }
     }

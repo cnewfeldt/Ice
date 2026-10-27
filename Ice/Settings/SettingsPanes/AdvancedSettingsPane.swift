@@ -25,16 +25,24 @@ struct AdvancedSettingsPane: View {
 
     var body: some View {
         IceForm {
+            // On macOS 27, sections have no dividers in the menu bar, and the
+            // options that move or measure individual items have no effect.
             IceSection("Menu Bar Sections") {
                 enableAlwaysHiddenSection
-                showAllSectionsOnUserDrag
-                sectionDividerStyle
+                if !usesNativeMenuBarHiding {
+                    showAllSectionsOnUserDrag
+                    sectionDividerStyle
+                }
             }
             IceSection("Other") {
-                hideApplicationMenus
+                if !usesNativeMenuBarHiding {
+                    hideApplicationMenus
+                }
                 enableSecondaryContextMenu
                 showOnHoverDelay
-                tempShowInterval
+                if !usesNativeMenuBarHiding {
+                    tempShowInterval
+                }
             }
             IceSection("Permissions") {
                 allPermissions
