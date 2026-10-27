@@ -74,7 +74,12 @@ final class IceBarPanel: NSPanel {
             }
             .store(in: &c)
 
-        if let controlItem = appState?.menuBarManager.controlItem(withName: .hidden) {
+        // On macOS 27, the hidden control item is never in the menu bar, so
+        // its frame can't tell whether the menu bar is hidden.
+        if
+            !usesNativeMenuBarHiding,
+            let controlItem = appState?.menuBarManager.controlItem(withName: .hidden)
+        {
             // Use the hidden control item's frame to determine if the menu bar
             // is hidden. Hide the panel if so.
             controlItem.$frame
@@ -139,6 +144,18 @@ final class IceBarPanel: NSPanel {
                 let lowerBound = screen.frame.minX
                 let upperBound = screen.frame.maxX - frame.width
 
+                if usesNativeMenuBarHiding {
+                    // The Ice icon is drawn by MenuBarAgent on macOS 27.
+                    let ownPID = ProcessInfo.processInfo.processIdentifier
+                    guard
+                        lowerBound <= upperBound,
+                        let iceIcon = MenuBarAgentReader.items().first(where: { $0.pid == ownPID })
+                    else {
+                        return originForRightOfScreen
+                    }
+                    return CGPoint(x: (iceIcon.frame.midX - frame.width / 2).clamped(to: lowerBound...upperBound), y: originY)
+                }
+
                 guard
                     lowerBound <= upperBound,
                     let controlItem = appState.itemManager.itemCache.managedItems.first(matching: .visibleControlItem),
@@ -168,15 +185,19 @@ final class IceBarPanel: NSPanel {
         appState.navigationState.isIceBarPresented = true
         currentSection = section
 
-        let cacheTask = Task(timeout: .seconds(1)) {
-            await appState.itemManager.cacheItemsIfNeeded()
-            await appState.imageCache.updateCache()
-        }
+        if usesNativeMenuBarHiding {
+            appState.nativeHidingManager.refreshApps()
+        } else {
+            let cacheTask = Task(timeout: .seconds(1)) {
+                await appState.itemManager.cacheItemsIfNeeded()
+                await appState.imageCache.updateCache()
+            }
 
-        do {
-            try await cacheTask.value
-        } catch {
-            Logger.default.error("Cache update failed when showing IceBarPanel - \(error)")
+            do {
+                try await cacheTask.value
+            } catch {
+                Logger.default.error("Cache update failed when showing IceBarPanel - \(error)")
+            }
         }
 
         contentView = IceBarHostingView(
@@ -235,6 +256,7 @@ private final class IceBarHostingView: NSHostingView<IceBarContentView> {
             itemManager: appState.itemManager,
             imageCache: appState.imageCache,
             menuBarManager: appState.menuBarManager,
+            nativeHidingManager: appState.nativeHidingManager,
             screen: screen,
             section: section
         )
@@ -264,6 +286,7 @@ private struct IceBarContentView: View {
     @ObservedObject var itemManager: MenuBarItemManager
     @ObservedObject var imageCache: MenuBarItemImageCache
     @ObservedObject var menuBarManager: MenuBarManager
+    @ObservedObject var nativeHidingManager: NativeHidingManager
     @State private var frame = CGRect.zero
     @State private var scrollIndicatorsFlashTrigger = 0
 
@@ -340,8 +363,47 @@ private struct IceBarContentView: View {
         .onFrameChange(update: $frame)
     }
 
+    /// The running apps assigned to the section, on macOS 27.
+    private var nativeApps: [NativeHidingManager.ManagedApp] {
+        nativeHidingManager.apps.filter { $0.section == section && $0.isRunning && !$0.isTurnedOffByUser }
+    }
+
     @ViewBuilder
     private var content: some View {
+        if usesNativeMenuBarHiding {
+            nativeContent
+        } else {
+            windowBasedContent
+        }
+    }
+
+    /// The content on macOS 27, where hidden items are not drawn anywhere and
+    /// can't be photographed, so each app is shown by its icon.
+    @ViewBuilder
+    private var nativeContent: some View {
+        if nativeApps.isEmpty {
+            Text("No hidden apps are running")
+                .padding(.horizontal, 10)
+        } else {
+            ScrollView(.horizontal) {
+                HStack(spacing: 0) {
+                    ForEach(nativeApps) { app in
+                        NativeIceBarItemView(
+                            nativeHidingManager: nativeHidingManager,
+                            menuBarManager: menuBarManager,
+                            app: app,
+                            section: section
+                        )
+                    }
+                }
+            }
+            .environment(\.isScrollEnabled, frame.width == screen.frame.width)
+            .defaultScrollAnchor(.trailing)
+        }
+    }
+
+    @ViewBuilder
+    private var windowBasedContent: some View {
         if !ScreenCapture.cachedCheckPermissions() {
             HStack {
                 Text("The Ice Bar requires screen recording permissions.")
@@ -461,6 +523,50 @@ private struct IceBarItemView: View {
                 .accessibilityAction(named: "left click", leftClickAction)
                 .accessibilityAction(named: "right click", rightClickAction)
         }
+    }
+}
+
+// MARK: - NativeIceBarItemView
+
+/// An app in the Ice Bar on macOS 27.
+private struct NativeIceBarItemView: View {
+    @ObservedObject var nativeHidingManager: NativeHidingManager
+    @ObservedObject var menuBarManager: MenuBarManager
+
+    let app: NativeHidingManager.ManagedApp
+    let section: MenuBarSection.Name
+
+    private var clickAction: () -> Void {
+        return { [weak nativeHidingManager, weak menuBarManager] in
+            guard let nativeHidingManager, let menuBarManager else {
+                return
+            }
+            nativeHidingManager.openItem(for: app.id)
+            menuBarManager.section(withName: section)?.hide()
+        }
+    }
+
+    var body: some View {
+        Group {
+            if let icon = app.icon {
+                Image(nsImage: icon)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+            } else {
+                Image(systemName: "app.dashed")
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+            }
+        }
+        .frame(width: 18, height: 18)
+        .padding(.horizontal, 6)
+        .frame(maxHeight: .infinity)
+        .contentShape(Rectangle())
+        .onTapGesture(perform: clickAction)
+        .help(app.name)
+        .accessibilityLabel(app.name)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction(named: "open", clickAction)
     }
 }
 

@@ -27,6 +27,22 @@ enum MenuBarAgentReader {
         let element: AXUIElement
     }
 
+    /// The items listed by `MenuBarAgent`, and its overflow buttons.
+    struct Snapshot {
+        /// The items, across all displays.
+        let items: [Item]
+
+        /// The overflow ("«") buttons, one per display that has one.
+        let overflowButtons: [(frame: CGRect, element: AXUIElement)]
+
+        /// A Boolean value that indicates whether the given item is drawn
+        /// where it can be clicked, rather than folded behind an overflow
+        /// button, which lists folded items at frames stacked over itself.
+        func isDrawn(_ item: Item) -> Bool {
+            !overflowButtons.contains { $0.frame.intersects(item.frame) }
+        }
+    }
+
     /// The bundle identifier of `MenuBarAgent`.
     static let agentBundleIdentifier = "com.apple.MenuBarAgent"
 
@@ -39,16 +55,25 @@ enum MenuBarAgentReader {
     /// and other system items) are included, with `MenuBarAgent`'s process
     /// identifier.
     static func items() -> [Item] {
+        snapshot().items
+    }
+
+    /// Returns the items currently listed by `MenuBarAgent`, and its overflow buttons.
+    static func snapshot() -> Snapshot {
         guard let agent = NSRunningApplication.runningApplications(withBundleIdentifier: agentBundleIdentifier).first else {
-            return []
+            return Snapshot(items: [], overflowButtons: [])
         }
         let application = AXUIElementCreateApplication(agent.processIdentifier)
         AXUIElementSetMessagingTimeout(application, 1)
 
         var items = [Item]()
+        var overflowButtons = [(frame: CGRect, element: AXUIElement)]()
         for window in elements(of: application, attribute: kAXWindowsAttribute) {
             for slot in elements(of: window, attribute: kAXChildrenAttribute) {
                 if string(of: slot, attribute: kAXDescriptionAttribute) == overflowDescription {
+                    if let frame = frame(of: slot) {
+                        overflowButtons.append((frame, slot))
+                    }
                     continue
                 }
                 guard
@@ -67,7 +92,7 @@ enum MenuBarAgentReader {
                 items.append(Item(pid: pid, frame: frame, title: title, element: slot))
             }
         }
-        return items
+        return Snapshot(items: items, overflowButtons: overflowButtons)
     }
 
     /// Returns the process identifiers of the apps that have items in the menu bar.

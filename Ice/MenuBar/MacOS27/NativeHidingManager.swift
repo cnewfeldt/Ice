@@ -43,6 +43,10 @@ final class NativeHidingManager: ObservableObject {
         /// A Boolean value that indicates whether the user turned the app
         /// off in System Settings, outside of Ice.
         let isTurnedOffByUser: Bool
+
+        /// A Boolean value that indicates whether the app is running, and so
+        /// can have items in the menu bar.
+        let isRunning: Bool
     }
 
     /// The apps that can be arranged, sorted by name.
@@ -63,6 +67,13 @@ final class NativeHidingManager: ObservableObject {
 
     /// Pending delayed reconciliations, scheduled after apps launch.
     private var delayedReconcileTasks = [Task<Void, Never>]()
+
+    /// Allow list entries that are shown while their menu is open, even
+    /// though their section is hidden.
+    private var temporarilyShown = Set<String>()
+
+    /// The task that opens an app's item from the Ice Bar.
+    private var openItemTask: Task<Void, Never>?
 
     /// The identifier of Ice's own allow list entry, which is never disallowed.
     private var ownEntryID: String? {
@@ -167,8 +178,12 @@ final class NativeHidingManager: ObservableObject {
         guard let menuBarManager = appState?.menuBarManager else {
             return []
         }
-        let hiddenSection = menuBarManager.section(withName: .hidden)
+        // Use the control items' states rather than the sections' `isHidden`.
+        // With the Ice Bar, a shown section is displayed in the panel and its
+        // control item stays hidden, so its apps must stay out of the bar.
+        let hiddenIsHidden = menuBarManager.controlItem(withName: .hidden)?.state != .showSection
         let alwaysHiddenSection = menuBarManager.section(withName: .alwaysHidden)
+        let alwaysHiddenIsHidden = alwaysHiddenSection?.controlItem.state != .showSection
         let alwaysHiddenEnabled = alwaysHiddenSection?.isEnabled ?? false
 
         var result = Set<String>()
@@ -177,17 +192,18 @@ final class NativeHidingManager: ObservableObject {
             case .visible:
                 false
             case .hidden:
-                hiddenSection?.isHidden ?? false
+                hiddenIsHidden
             case .alwaysHidden where alwaysHiddenEnabled:
-                alwaysHiddenSection?.isHidden ?? false
+                alwaysHiddenIsHidden
             case .alwaysHidden:
                 // Without an always-hidden section, its apps follow the hidden section.
-                hiddenSection?.isHidden ?? false
+                hiddenIsHidden
             }
             if isHidden {
                 result.insert(id)
             }
         }
+        result.subtract(temporarilyShown)
         if let ownEntryID {
             result.remove(ownEntryID)
         }
@@ -244,6 +260,144 @@ final class NativeHidingManager: ObservableObject {
         }
     }
 
+    // MARK: Opening Items
+
+    /// Shows the app with the given entry identifier in the menu bar and
+    /// opens its item, as if the user clicked it.
+    ///
+    /// The app is shown only while its menu is open. If the menu bar has no
+    /// room to draw the item, macOS folds it behind the overflow button, where
+    /// it cannot be pressed directly, so the overflow menu is opened instead.
+    func openItem(for id: String) {
+        openItemTask?.cancel()
+        openItemTask = Task { [weak self] in
+            guard let self else {
+                return
+            }
+            await openItemAndWait(for: id)
+            temporarilyShown.remove(id)
+            reconcile()
+        }
+    }
+
+    private func openItemAndWait(for id: String) async {
+        guard let entry = try? MenuBarAllowList.entries().first(where: { $0.id == id }) else {
+            logger.error("Cannot open item: no allow list entry for \(id, privacy: .public)")
+            return
+        }
+
+        let pids = Set(
+            NSWorkspace.shared.runningApplications
+                .filter { entry.owns(bundleIdentifier: $0.bundleIdentifier, executablePath: $0.executableURL?.path) }
+                .map(\.processIdentifier)
+        )
+        guard !pids.isEmpty else {
+            logger.info("Cannot open item: \(id, privacy: .public) is not running")
+            return
+        }
+
+        temporarilyShown.insert(id)
+        reconcile()
+
+        // MenuBarAgent fades a newly allowed item in over about a quarter of
+        // a second, and lists it as folded until it settles.
+        var snapshot = MenuBarAgentReader.snapshot()
+        var drawnItem: MenuBarAgentReader.Item?
+        for _ in 0..<20 {
+            try? await Task.sleep(for: .milliseconds(100))
+            guard !Task.isCancelled else {
+                return
+            }
+            snapshot = MenuBarAgentReader.snapshot()
+            if let item = snapshot.items.first(where: { pids.contains($0.pid) && snapshot.isDrawn($0) }) {
+                drawnItem = item
+                break
+            }
+        }
+
+        var watchedPIDs = pids
+        if let drawnItem {
+            // The press reports an error even when the item opens, so the
+            // result says nothing useful.
+            AXUIElementPerformAction(drawnItem.element, kAXPressAction as CFString)
+        } else if let overflowButton = snapshot.overflowButtons.first {
+            logger.info("\(id, privacy: .public) is folded behind the overflow button; opening the overflow menu")
+            AXUIElementPerformAction(overflowButton.element, kAXPressAction as CFString)
+            if let agent = NSRunningApplication.runningApplications(withBundleIdentifier: MenuBarAgentReader.agentBundleIdentifier).first {
+                watchedPIDs.insert(agent.processIdentifier)
+            }
+        } else {
+            logger.error("Cannot open item: \(id, privacy: .public) did not appear in the menu bar")
+            return
+        }
+
+        await waitForMenusToClose(ownedBy: watchedPIDs)
+    }
+
+    /// Waits until the given processes have no menus or popovers on screen.
+    ///
+    /// Status items are not windows on macOS 27, so any on-screen window
+    /// above the normal level that belongs to these processes is a menu,
+    /// popover or panel opened from the menu bar. MenuBarAgent's own bar
+    /// windows are excluded by their height.
+    private func waitForMenusToClose(ownedBy pids: Set<pid_t>) async {
+        func hasOpenMenu() -> Bool {
+            guard let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[CFString: Any]] else {
+                return false
+            }
+            return windows.contains { window in
+                guard
+                    let pid = window[kCGWindowOwnerPID] as? pid_t,
+                    pids.contains(pid),
+                    let layer = window[kCGWindowLayer] as? Int,
+                    layer > 0,
+                    let bounds = window[kCGWindowBounds] as? [String: CGFloat],
+                    let height = bounds["Height"]
+                else {
+                    return false
+                }
+                return height > 40
+            }
+        }
+
+        // Give the menu time to open. If it never does, keep the app shown
+        // briefly so a slow app still has a chance, then give up.
+        var sawMenu = false
+        for _ in 0..<12 {
+            try? await Task.sleep(for: .milliseconds(250))
+            guard !Task.isCancelled else {
+                return
+            }
+            if hasOpenMenu() {
+                sawMenu = true
+                break
+            }
+        }
+        guard sawMenu else {
+            return
+        }
+
+        // Wait for the menu to close, requiring it to stay closed briefly so
+        // a menu replaced by a submenu or a second popover is not mistaken
+        // for a closed one. Give up after ten minutes.
+        var closedSince: Date?
+        for _ in 0..<2400 {
+            try? await Task.sleep(for: .milliseconds(250))
+            guard !Task.isCancelled else {
+                return
+            }
+            if hasOpenMenu() {
+                closedSince = nil
+            } else if let closedSince {
+                if Date.now.timeIntervalSince(closedSince) >= 0.75 {
+                    return
+                }
+            } else {
+                closedSince = .now
+            }
+        }
+    }
+
     // MARK: Layout
 
     /// Assigns the app with the given entry identifier to a section.
@@ -273,6 +427,10 @@ final class NativeHidingManager: ObservableObject {
         let journal = journal
         let ownEntryID = ownEntryID
 
+        let runningApps = NSWorkspace.shared.runningApplications.map { app in
+            (bundleIdentifier: app.bundleIdentifier, executablePath: app.executableURL?.path)
+        }
+
         var ids = Set(assignments.keys).union(journal)
         for pid in MenuBarAgentReader.owningProcessIdentifiers() {
             guard let app = NSRunningApplication(processIdentifier: pid) else {
@@ -294,7 +452,8 @@ final class NativeHidingManager: ObservableObject {
                     name: name,
                     icon: icon,
                     section: assignments[entry.id] ?? .visible,
-                    isTurnedOffByUser: !entry.isAllowed && !journal.contains(entry.id)
+                    isTurnedOffByUser: !entry.isAllowed && !journal.contains(entry.id),
+                    isRunning: runningApps.contains { entry.owns(bundleIdentifier: $0.bundleIdentifier, executablePath: $0.executablePath) }
                 )
             }
             .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
