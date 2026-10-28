@@ -369,7 +369,7 @@ private struct IceBarContentView: View {
 
     /// The running apps assigned to the section, on macOS 27.
     private var nativeApps: [NativeHidingManager.ManagedApp] {
-        nativeHidingManager.apps.filter { $0.section == section && $0.isRunning && !$0.isTurnedOffByUser }
+        nativeHidingManager.apps.filter { $0.activeSection == section && $0.isRunning && !$0.isTurnedOffByUser }
     }
 
     @ViewBuilder

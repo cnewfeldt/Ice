@@ -23,6 +23,9 @@ struct NativeLayoutSettingsPane: View {
     var body: some View {
         IceForm(spacing: 20) {
             header
+            if NativeHidingManager.LayoutProfile.hasBuiltInDisplay {
+                profilePicker
+            }
             if let error = manager.lastError {
                 errorBox(error)
             }
@@ -52,6 +55,34 @@ struct NativeLayoutSettingsPane: View {
                     .multilineTextAlignment(.center)
             }
             .padding(15)
+        }
+    }
+
+    @ViewBuilder
+    private var profilePicker: some View {
+        VStack(spacing: 6) {
+            Picker("Layout", selection: $manager.editingProfile) {
+                ForEach(NativeHidingManager.LayoutProfile.allCases) { profile in
+                    Text(LocalizedStringKey(profile.displayString)).tag(profile)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .fixedSize()
+
+            Text(profileCaption)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var profileCaption: LocalizedStringKey {
+        let inUse = manager.editingProfile == manager.activeProfile ? "In use now." : "Not in use right now."
+        return switch manager.editingProfile {
+        case .builtInDisplayOnly:
+            LocalizedStringKey("Used when the laptop screen is the only display. \(inUse)")
+        case .withExternalDisplay:
+            LocalizedStringKey("Used when an external display is connected. \(inUse)")
         }
     }
 

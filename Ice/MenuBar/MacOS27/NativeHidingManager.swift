@@ -26,6 +26,41 @@ var usesNativeMenuBarHiding: Bool {
 /// at the next launch. It never changes an app the user turned off themselves.
 @MainActor
 final class NativeHidingManager: ObservableObject {
+    /// A set of section assignments, chosen by which displays are connected.
+    ///
+    /// The allow list applies to the menu bar on every display at once, so
+    /// a layout can't differ between displays. Instead, a laptop can use a
+    /// more compact layout while its built-in display is the only one.
+    enum LayoutProfile: String, CaseIterable, Identifiable {
+        case withExternalDisplay
+        case builtInDisplayOnly
+
+        var id: Self { self }
+
+        /// A string to show in the interface.
+        var displayString: String {
+            switch self {
+            case .withExternalDisplay: "With External Display"
+            case .builtInDisplayOnly: "Laptop Screen Only"
+            }
+        }
+
+        /// A Boolean value that indicates whether this Mac has a built-in
+        /// display that is currently on.
+        static var hasBuiltInDisplay: Bool {
+            NSScreen.screens.contains { CGDisplayIsBuiltin($0.displayID) != 0 }
+        }
+
+        /// The profile for the displays that are connected now.
+        static var current: LayoutProfile {
+            let screens = NSScreen.screens
+            guard !screens.isEmpty, screens.allSatisfy({ CGDisplayIsBuiltin($0.displayID) != 0 }) else {
+                return .withExternalDisplay
+            }
+            return .builtInDisplayOnly
+        }
+    }
+
     /// An app shown in the layout interface.
     struct ManagedApp: Identifiable, Equatable {
         /// The identifier of the app's allow list entry.
@@ -37,8 +72,11 @@ final class NativeHidingManager: ObservableObject {
         /// The app's icon.
         let icon: NSImage?
 
-        /// The section the app is assigned to.
+        /// The section the app is assigned to in the profile being edited.
         let section: MenuBarSection.Name
+
+        /// The section the app is assigned to in the profile in use.
+        let activeSection: MenuBarSection.Name
 
         /// A Boolean value that indicates whether the user turned the app
         /// off in System Settings, outside of Ice.
@@ -51,6 +89,18 @@ final class NativeHidingManager: ObservableObject {
 
     /// The apps that can be arranged, sorted by name.
     @Published private(set) var apps = [ManagedApp]()
+
+    /// The layout profile in use, based on the connected displays.
+    @Published private(set) var activeProfile = LayoutProfile.current
+
+    /// The layout profile shown in the layout pane.
+    @Published var editingProfile = LayoutProfile.current {
+        didSet {
+            if editingProfile != oldValue {
+                refreshApps()
+            }
+        }
+    }
 
     /// A description of the most recent error, if the last attempt to update
     /// the allow list failed.
@@ -88,21 +138,39 @@ final class NativeHidingManager: ObservableObject {
 
     private enum Keys {
         static let assignments = "MacOS27SectionAssignments"
+        static let builtInDisplayAssignments = "MacOS27SectionAssignmentsBuiltInDisplay"
         static let journal = "MacOS27DisallowedByIce"
         static let order = "MacOS27AppOrder"
     }
 
-    /// The section assigned to each allow list entry. Entries that are not
-    /// listed are in the visible section.
+    /// The section assigned to each allow list entry in the profile in use.
     private var assignments: [String: MenuBarSection.Name] {
-        get {
-            let raw = UserDefaults.standard.dictionary(forKey: Keys.assignments) as? [String: String] ?? [:]
-            return raw.compactMapValues(MenuBarSection.Name.init(storageKey:))
+        assignments(for: activeProfile)
+    }
+
+    private static func storageKey(for profile: LayoutProfile) -> String {
+        switch profile {
+        case .withExternalDisplay: Keys.assignments
+        case .builtInDisplayOnly: Keys.builtInDisplayAssignments
         }
-        set {
-            let raw = newValue.filter { $0.value != .visible }.mapValues(\.storageKey)
-            UserDefaults.standard.set(raw, forKey: Keys.assignments)
-        }
+    }
+
+    /// Returns the section assigned to each allow list entry in the given
+    /// profile. Entries that are not listed are in the visible section.
+    ///
+    /// Until the laptop profile is first changed, it uses the same
+    /// assignments as the external display profile.
+    private func assignments(for profile: LayoutProfile) -> [String: MenuBarSection.Name] {
+        let defaults = UserDefaults.standard
+        let raw = defaults.dictionary(forKey: Self.storageKey(for: profile)) as? [String: String]
+            ?? defaults.dictionary(forKey: Keys.assignments) as? [String: String]
+            ?? [:]
+        return raw.compactMapValues(MenuBarSection.Name.init(storageKey:))
+    }
+
+    private func setAssignments(_ assignments: [String: MenuBarSection.Name], for profile: LayoutProfile) {
+        let raw = assignments.filter { $0.value != .visible }.mapValues(\.storageKey)
+        UserDefaults.standard.set(raw, forKey: Self.storageKey(for: profile))
     }
 
     /// The allow list entries that Ice has disallowed and must allow again.
@@ -158,6 +226,15 @@ final class NativeHidingManager: ObservableObject {
             }
             .store(in: &c)
 
+        // Switch layouts when a display is connected or disconnected.
+        NotificationCenter.default
+            .publisher(for: NSApplication.didChangeScreenParametersNotification)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.updateActiveProfile()
+            }
+            .store(in: &c)
+
         Timer.publish(every: 15, on: .main, in: .default)
             .autoconnect()
             .sink { [weak self] _ in
@@ -166,6 +243,18 @@ final class NativeHidingManager: ObservableObject {
             .store(in: &c)
 
         cancellables = c
+    }
+
+    private func updateActiveProfile() {
+        let profile = LayoutProfile.current
+        guard profile != activeProfile else {
+            return
+        }
+        logger.info("Switching to layout profile \(profile.rawValue, privacy: .public)")
+        activeProfile = profile
+        editingProfile = profile
+        reconcile()
+        refreshApps()
     }
 
     private func scheduleDelayedReconciliation() {
@@ -417,9 +506,9 @@ final class NativeHidingManager: ObservableObject {
         guard id != ownEntryID else {
             return
         }
-        var newAssignments = assignments
+        var newAssignments = assignments(for: editingProfile)
         newAssignments[id] = section
-        assignments = newAssignments
+        setAssignments(newAssignments, for: editingProfile)
         reconcile()
         refreshApps()
     }
@@ -450,7 +539,7 @@ final class NativeHidingManager: ObservableObject {
         let listed = Set(newOrder)
         order = newOrder + order.filter { !listed.contains($0) && $0 != id }
 
-        if (assignments[id] ?? .visible) != section {
+        if (assignments(for: editingProfile)[id] ?? .visible) != section {
             assign(id, to: section)
         } else {
             refreshApps()
@@ -468,7 +557,11 @@ final class NativeHidingManager: ObservableObject {
             return
         }
 
-        let assignments = assignments
+        let editingAssignments = assignments(for: editingProfile)
+        let activeAssignments = assignments
+        let allAssignedIDs = LayoutProfile.allCases.reduce(into: Set<String>()) { ids, profile in
+            ids.formUnion(assignments(for: profile).keys)
+        }
         let journal = journal
         let ownEntryID = ownEntryID
         let positions = Dictionary(order.enumerated().map { ($1, $0) }, uniquingKeysWith: { first, _ in first })
@@ -482,7 +575,7 @@ final class NativeHidingManager: ObservableObject {
         let primaryDisplayBounds = CGDisplayBounds(CGMainDisplayID())
         let snapshot = MenuBarAgentReader.snapshot()
 
-        var ids = Set(assignments.keys).union(journal)
+        var ids = allAssignedIDs.union(journal)
         // The leftmost drawn position of each app's items in the menu bar.
         var barPositions = [String: CGFloat]()
         for item in snapshot.items {
@@ -508,7 +601,8 @@ final class NativeHidingManager: ObservableObject {
                     id: entry.id,
                     name: name,
                     icon: icon,
-                    section: assignments[entry.id] ?? .visible,
+                    section: editingAssignments[entry.id] ?? .visible,
+                    activeSection: activeAssignments[entry.id] ?? .visible,
                     isTurnedOffByUser: !entry.isAllowed && !journal.contains(entry.id),
                     isRunning: runningApps.contains { entry.owns(bundleIdentifier: $0.bundleIdentifier, executablePath: $0.executablePath) }
                 )
