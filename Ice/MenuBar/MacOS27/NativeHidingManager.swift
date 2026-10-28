@@ -85,6 +85,11 @@ final class NativeHidingManager: ObservableObject {
         /// A Boolean value that indicates whether the app is running, and so
         /// can have items in the menu bar.
         let isRunning: Bool
+
+        /// A Boolean value that indicates whether the app has items in the
+        /// menu bar, but macOS folded all of them behind the overflow button
+        /// for lack of room.
+        let isFolded: Bool
     }
 
     /// The apps that can be arranged, sorted by name.
@@ -513,6 +518,24 @@ final class NativeHidingManager: ObservableObject {
         refreshApps()
     }
 
+    /// Moves every visible app that macOS folded behind the overflow button
+    /// into the hidden section of the layout in use, where the Ice Bar can
+    /// show it.
+    func moveFoldedAppsToHidden() {
+        let ids = apps.filter { $0.activeSection == .visible && $0.isFolded }.map(\.id)
+        guard !ids.isEmpty else {
+            return
+        }
+        var newAssignments = assignments(for: activeProfile)
+        for id in ids where id != ownEntryID {
+            newAssignments[id] = .hidden
+        }
+        setAssignments(newAssignments, for: activeProfile)
+        logger.info("Moved \(ids.count) folded apps to the hidden section")
+        reconcile()
+        refreshApps()
+    }
+
     /// Moves the app with the given entry identifier into a section, placing
     /// it before another app, or at the end of the section if `target` is `nil`.
     ///
@@ -578,6 +601,9 @@ final class NativeHidingManager: ObservableObject {
         var ids = allAssignedIDs.union(journal)
         // The leftmost drawn position of each app's items in the menu bar.
         var barPositions = [String: CGFloat]()
+        // Apps with at least one item listed, and with at least one drawn.
+        var listedIDs = Set<String>()
+        var drawnIDs = Set<String>()
         for item in snapshot.items {
             guard let app = NSRunningApplication(processIdentifier: item.pid) else {
                 continue
@@ -588,6 +614,10 @@ final class NativeHidingManager: ObservableObject {
                 continue
             }
             ids.insert(entry.id)
+            listedIDs.insert(entry.id)
+            if snapshot.isDrawn(item) {
+                drawnIDs.insert(entry.id)
+            }
             if snapshot.isDrawn(item), primaryDisplayBounds.intersects(item.frame) {
                 barPositions[entry.id] = min(barPositions[entry.id] ?? .infinity, item.frame.minX)
             }
@@ -604,7 +634,8 @@ final class NativeHidingManager: ObservableObject {
                     section: editingAssignments[entry.id] ?? .visible,
                     activeSection: activeAssignments[entry.id] ?? .visible,
                     isTurnedOffByUser: !entry.isAllowed && !journal.contains(entry.id),
-                    isRunning: runningApps.contains { entry.owns(bundleIdentifier: $0.bundleIdentifier, executablePath: $0.executablePath) }
+                    isRunning: runningApps.contains { entry.owns(bundleIdentifier: $0.bundleIdentifier, executablePath: $0.executablePath) },
+                    isFolded: listedIDs.contains(entry.id) && !drawnIDs.contains(entry.id)
                 )
             }
             .sorted { lhs, rhs in

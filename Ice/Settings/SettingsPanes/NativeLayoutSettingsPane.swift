@@ -98,9 +98,15 @@ struct NativeLayoutSettingsPane: View {
     private func sectionBox(for section: MenuBarSection.Name) -> some View {
         let apps = manager.apps.filter { $0.section == section }
         VStack(alignment: .leading) {
-            Text(section.localized)
-                .font(.headline)
-                .padding(.leading, 8)
+            HStack {
+                Text(section.localized)
+                    .font(.headline)
+                Spacer()
+                if section == .visible {
+                    moveFoldedAppsButton
+                }
+            }
+            .padding(.horizontal, 8)
 
             IceSection {
                 if apps.isEmpty {
@@ -134,6 +140,26 @@ struct NativeLayoutSettingsPane: View {
         }
     }
 
+    /// Visible apps folded behind the overflow button. Only meaningful for
+    /// the layout in use, since the menu bar reflects that one.
+    private var foldedAppCount: Int {
+        guard manager.editingProfile == manager.activeProfile else {
+            return 0
+        }
+        return manager.apps.filter { $0.section == .visible && $0.isFolded }.count
+    }
+
+    @ViewBuilder
+    private var moveFoldedAppsButton: some View {
+        let count = foldedAppCount
+        if count > 0 {
+            Button(count == 1 ? "Move 1 Folded App to Hidden" : "Move \(count) Folded Apps to Hidden") {
+                manager.moveFoldedAppsToHidden()
+            }
+            .help("Apps that don't fit in the menu bar are folded behind macOS's « button. Hidden apps appear in the Ice Bar instead.")
+        }
+    }
+
     @ViewBuilder
     private func appRow(_ app: NativeHidingManager.ManagedApp) -> some View {
         HStack {
@@ -143,6 +169,11 @@ struct NativeLayoutSettingsPane: View {
                     .frame(width: 20, height: 20)
             }
             Text(app.name)
+            if app.isFolded, app.section == .visible, manager.editingProfile == manager.activeProfile {
+                Text("Behind «")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             if app.isTurnedOffByUser {
                 Text("Off in System Settings")
                     .font(.caption)
