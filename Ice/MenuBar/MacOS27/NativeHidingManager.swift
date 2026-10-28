@@ -75,6 +75,10 @@ final class NativeHidingManager: ObservableObject {
     /// The task that opens an app's item from the Ice Bar.
     private var openItemTask: Task<Void, Never>?
 
+    /// App names and icons, by allow list entry identifier. Loading icons
+    /// from disk is slow enough to delay opening the Ice Bar.
+    private var nameAndIconCache = [String: (name: String, icon: NSImage?)]()
+
     /// The identifier of Ice's own allow list entry, which is never disallowed.
     private var ownEntryID: String? {
         Bundle.main.bundleIdentifier.map { "bundle:" + $0 }
@@ -488,7 +492,7 @@ final class NativeHidingManager: ObservableObject {
         apps = entries
             .filter { ids.contains($0.id) && $0.id != ownEntryID }
             .map { entry in
-                let (name, icon) = Self.nameAndIcon(for: entry)
+                let (name, icon) = cachedNameAndIcon(for: entry)
                 return ManagedApp(
                     id: entry.id,
                     name: name,
@@ -512,7 +516,16 @@ final class NativeHidingManager: ObservableObject {
             }
     }
 
-    private static func nameAndIcon(for entry: MenuBarAllowList.Entry) -> (String, NSImage?) {
+    private func cachedNameAndIcon(for entry: MenuBarAllowList.Entry) -> (name: String, icon: NSImage?) {
+        if let cached = nameAndIconCache[entry.id] {
+            return cached
+        }
+        let result = Self.nameAndIcon(for: entry)
+        nameAndIconCache[entry.id] = result
+        return result
+    }
+
+    private static func nameAndIcon(for entry: MenuBarAllowList.Entry) -> (name: String, icon: NSImage?) {
         let fileManager = FileManager.default
         if
             let bundleIdentifier = entry.bundleIdentifier,

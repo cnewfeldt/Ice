@@ -20,9 +20,6 @@ enum MenuBarAgentReader {
         /// The frame of the item's slot, in screen coordinates (top-left origin).
         let frame: CGRect
 
-        /// The item's title, if it has one.
-        let title: String?
-
         /// The slot's Accessibility element.
         let element: AXUIElement
     }
@@ -87,9 +84,10 @@ enum MenuBarAgentReader {
                 guard AXUIElementGetPid(child, &pid) == .success else {
                     continue
                 }
-                let title = string(of: child, attribute: kAXTitleAttribute)
-                    ?? string(of: child, attribute: kAXDescriptionAttribute)
-                items.append(Item(pid: pid, frame: frame, title: title, element: slot))
+                // Only MenuBarAgent is asked about each slot. Asking the child
+                // for anything, such as its title, messages the owning app,
+                // and a busy app stalls the whole read.
+                items.append(Item(pid: pid, frame: frame, element: slot))
             }
         }
         return Snapshot(items: items, overflowButtons: overflowButtons)

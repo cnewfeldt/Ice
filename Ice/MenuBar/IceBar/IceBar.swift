@@ -186,7 +186,11 @@ final class IceBarPanel: NSPanel {
         currentSection = section
 
         if usesNativeMenuBarHiding {
-            appState.nativeHidingManager.refreshApps()
+            // Show the apps already known, and refresh them once the panel is
+            // on screen, so reading the menu bar doesn't delay opening it.
+            Task {
+                appState.nativeHidingManager.refreshApps()
+            }
         } else {
             let cacheTask = Task(timeout: .seconds(1)) {
                 await appState.itemManager.cacheItemsIfNeeded()
