@@ -42,7 +42,7 @@ struct NativeLayoutSettingsPane: View {
             VStack(spacing: 3) {
                 Text("Drag apps into the section where their menu bar items belong.")
                     .font(.title3.bold())
-                Text("Drag within a section to set the order the Ice Bar uses. To reorder items in the menu bar itself, ⌘ Command-drag them there.")
+                Text("Visible apps are listed in menu bar order; to reorder them, ⌘ Command-drag them in the menu bar. Drag within a hidden section to set the order the Ice Bar uses.")
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -141,11 +141,13 @@ struct NativeLayoutSettingsPane: View {
         }
         .dropDestination(for: String.self) { ids, _ in
             for id in ids {
-                manager.move(id, before: app.id, in: app.section)
+                // The visible section follows the menu bar's order, so a drop
+                // there only moves the app into the section.
+                manager.move(id, before: app.section == .visible ? nil : app.id, in: app.section)
             }
             return !ids.isEmpty
         } isTargeted: { isTargeted in
-            if isTargeted {
+            if isTargeted, app.section != .visible {
                 targetedApp = app.id
             } else if targetedApp == app.id {
                 targetedApp = nil

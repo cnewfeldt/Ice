@@ -477,15 +477,26 @@ final class NativeHidingManager: ObservableObject {
             (bundleIdentifier: app.bundleIdentifier, executablePath: app.executableURL?.path)
         }
 
+        // The bar of the primary display, whose frame starts at the origin of
+        // the global coordinate space that MenuBarAgent reports frames in.
+        let primaryDisplayBounds = CGDisplayBounds(CGMainDisplayID())
+        let snapshot = MenuBarAgentReader.snapshot()
+
         var ids = Set(assignments.keys).union(journal)
-        for pid in MenuBarAgentReader.owningProcessIdentifiers() {
-            guard let app = NSRunningApplication(processIdentifier: pid) else {
+        // The leftmost drawn position of each app's items in the menu bar.
+        var barPositions = [String: CGFloat]()
+        for item in snapshot.items {
+            guard let app = NSRunningApplication(processIdentifier: item.pid) else {
                 continue
             }
             let bundleIdentifier = app.bundleIdentifier
             let executablePath = app.executableURL?.path
-            if let entry = entries.first(where: { $0.owns(bundleIdentifier: bundleIdentifier, executablePath: executablePath) }) {
-                ids.insert(entry.id)
+            guard let entry = entries.first(where: { $0.owns(bundleIdentifier: bundleIdentifier, executablePath: executablePath) }) else {
+                continue
+            }
+            ids.insert(entry.id)
+            if snapshot.isDrawn(item), primaryDisplayBounds.intersects(item.frame) {
+                barPositions[entry.id] = min(barPositions[entry.id] ?? .infinity, item.frame.minX)
             }
         }
 
@@ -503,7 +514,27 @@ final class NativeHidingManager: ObservableObject {
                 )
             }
             .sorted { lhs, rhs in
-                switch (positions[lhs.id], positions[rhs.id]) {
+                // Group by section first, so each section's own ordering rule
+                // only ever compares apps in that section.
+                let sectionOrder = MenuBarSection.Name.allCases
+                if lhs.section != rhs.section {
+                    return sectionOrder.firstIndex(of: lhs.section) ?? 0 < sectionOrder.firstIndex(of: rhs.section) ?? 0
+                }
+                // Visible apps are listed in the order they're drawn in the
+                // menu bar, followed by those folded behind the overflow button.
+                if lhs.section == .visible {
+                    switch (barPositions[lhs.id], barPositions[rhs.id]) {
+                    case let (lhsPosition?, rhsPosition?):
+                        return lhsPosition < rhsPosition
+                    case (.some, nil):
+                        return true
+                    case (nil, .some):
+                        return false
+                    case (nil, nil):
+                        break
+                    }
+                }
+                return switch (positions[lhs.id], positions[rhs.id]) {
                 case let (lhsPosition?, rhsPosition?):
                     lhsPosition < rhsPosition
                 case (.some, nil):
